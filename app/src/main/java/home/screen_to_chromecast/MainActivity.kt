@@ -2,11 +2,14 @@ package home.screen_to_chromecast
 
 import android.app.Activity
 import android.content.Intent
+import android.Manifest // Added import
+import android.content.pm.PackageManager // Added import
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.util.Log
 import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat // Added import
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import home.screen_to_chromecast.casting.ScreenCastingService
@@ -27,22 +30,47 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
     private lateinit var rendererAdapter: ArrayAdapter<String>
     private var selectedRenderer: RendererItem? = null
 
-    private val requestMediaProjection =
+    // Launcher for MediaProjection permission (remains largely the same)
+    private val requestMediaProjectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            Log.d(TAG, "MediaProjection permission result: resultCode=${result.resultCode}, dataPresent=${result.data != null}")
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                Log.d(TAG, "MediaProjection permission granted.")
+                Log.i(TAG, "MediaProjection permission GRANTED by user.")
                 val serviceIntent = Intent(this, ScreenCastingService::class.java).apply {
                     action = ScreenCastingService.ACTION_START_CASTING
                     putExtra(ScreenCastingService.EXTRA_RESULT_CODE, result.resultCode)
                     putExtra(ScreenCastingService.EXTRA_RESULT_DATA, result.data)
+                    // selectedRenderer should already be in RendererHolder
                 }
+                Log.i(TAG, "Starting ScreenCastingService with intent: action=${serviceIntent.action}, extras present: ${serviceIntent.extras?.keySet()?.joinToString()}")
                 startForegroundService(serviceIntent)
             } else {
-                Log.w(TAG, "MediaProjection permission denied.")
-                binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission denied."
+                Log.w(TAG, "MediaProjection permission DENIED by user or no data.")
+                binding.textViewStatus.text = getString(R.string.error_prefix) + "Screen capture permission was denied."
                 RendererHolder.selectedRendererName = null
                 RendererHolder.selectedRendererType = null
                 selectedRenderer = null
+            }
+        }
+
+    // New launcher for RECORD_AUDIO permission
+    private val requestAudioPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
+            if (isGranted) {
+                Log.i(TAG, "RECORD_AUDIO permission granted by user.") // Changed to Log.i for emphasis
+                // Now that audio permission is granted, request MediaProjection
+                binding.textViewStatus.text = getString(R.string.status_requesting_media_projection)
+                val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                Log.d(TAG, "Proceeding to launch MediaProjection permission request.")
+                requestMediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+            } else {
+                Log.w(TAG, "RECORD_AUDIO permission denied by user.")
+                binding.textViewStatus.text = getString(R.string.error_audio_permission_denied)
+                // Clear selection or handle UI state as appropriate
+                selectedRenderer = null
+                RendererHolder.selectedRendererName = null
+                RendererHolder.selectedRendererType = null
+                // Consider also resetting the status text or device list selection UI
             }
         }
 
@@ -90,11 +118,32 @@ class MainActivity : AppCompatActivity(), RendererDiscoverer.EventListener {
                 // Use direct field access as confirmed by Javadoc for 3.6.1
                 val clickedRendererName = clickedRenderer.name ?: "Unknown Name"
                 val clickedRendererDisplayName = clickedRenderer.displayName ?: clickedRendererName
-                Log.d(TAG, "Selected renderer: $clickedRendererName (Type: ${clickedRenderer.type}, DisplayName: $clickedRendererDisplayName)")
-                binding.textViewStatus.text = getString(R.string.casting_to, clickedRendererDisplayName)
+                Log.i(TAG, "Renderer item clicked: ${clickedRenderer.displayName ?: clickedRenderer.name}") // Added .i log
+                Log.d(TAG, "Selected renderer details: Name=$clickedRendererName, Type=${clickedRenderer.type}, DisplayName=$clickedRendererDisplayName")
 
-                val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                requestMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+                binding.textViewStatus.text = getString(R.string.status_requesting_permissions)
+                Log.d(TAG, "Checking/Requesting RECORD_AUDIO permission.") // Added log
+
+                // Request RECORD_AUDIO permission first
+                when {
+                    ContextCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED -> {
+                        Log.d(TAG, "RECORD_AUDIO permission was already granted. Launching MediaProjection request directly.")
+                        binding.textViewStatus.text = getString(R.string.status_requesting_media_projection)
+                        val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                        requestMediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    }
+                    shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> {
+                        Log.i(TAG, "Showing rationale for RECORD_AUDIO permission is recommended but not implemented for this step. Requesting permission.")
+                        requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                    else -> {
+                        Log.d(TAG, "RECORD_AUDIO permission not yet granted. Launching audio permission request via requestAudioPermissionLauncher.")
+                        requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
             }
         }
     }
